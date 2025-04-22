@@ -63,7 +63,7 @@ class FactCheckResponse(BaseModel):
 
 
 def summarize(text: str, model: str) -> str:
-    """summarizes the text via Groq."""
+    """summarizes the text via OpenAI."""
     if len(text) <= 200:
         return text
     try:
@@ -92,6 +92,9 @@ def summarize(text: str, model: str) -> str:
         return response.summary or ""
     except AssertionError:
         return ""
+    except Exception as e:
+        st.error(f"Summarization error: {str(e)}")
+        return text
 
 
 def get_content(url: str, model: str) -> str | None:
@@ -126,9 +129,14 @@ def calculate_confidence_from_logprobs(logprobs: ChoiceLogprobs) -> float:
     """
     if logprobs.content is None:
         st.error("Logprobs doesn't work with this model")
-        return -1
-    min_prob = min(math.exp(logprob.logprob) for logprob in logprobs.content)
-    return min_prob
+        return 0.0
+
+    try:
+        min_prob = min(math.exp(logprob.logprob) for logprob in logprobs.content)
+        return min_prob
+    except (ValueError, TypeError) as e:
+        st.error(f"Error calculating confidence: {str(e)}")
+        return 0.0
 
 
 async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
@@ -173,32 +181,53 @@ async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
 
     # Send the search results back to GPT for analysis
     # Request logprobs to calculate confidence
-    resp = oai_client.beta.chat.completions.parse(
-        model=model,
-        response_format=GPTFactCheckModel,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a professional fact checker. You will be given a statement along with relevant search results and you are supposed to provide a fact check based on the search results. You need to classify the claim as 'correct', 'incorrect', or 'misleading' and provide the logical explanation along with the sources you used.",
-            },
-            {
-                "role": "user",
-                "content": f"Claim: {claim}\n\nSearch results: {ujson.dumps(search_results, escape_forward_slashes=False, indent=2)}",
-            },
-        ],
-        logprobs=True,
-    )
+    try:
+        resp = oai_client.beta.chat.completions.parse(
+            model=model,
+            response_format=GPTFactCheckModel,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a professional fact checker. You will be given a statement along with relevant search results and you are supposed to provide a fact check based on the search results. You need to classify the claim as 'correct', 'incorrect', or 'misleading' and provide the logical explanation along with the sources you used.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Claim: {claim}\n\nSearch results: {ujson.dumps(search_results, escape_forward_slashes=False, indent=2)}",
+                },
+            ],
+            logprobs=True,
+        )
 
-    logprobs = resp.choices[0].logprobs
+        logprobs = resp.choices[0].logprobs
 
-    if logprobs is None:
-        raise Exception("Logprobs error")
+        if logprobs is None:
+            raise Exception("Logprobs error")
 
-    # Calculate confidence score
-    confidence_score = calculate_confidence_from_logprobs(logprobs)
+        # Calculate confidence score
+        confidence_score = calculate_confidence_from_logprobs(logprobs)
 
-    res = GPTFactCheckModel.model_validate_json(resp.choices[0].message.content or "")
-    return res, confidence_score
+        # Try to parse the response as JSON, with error handling
+        try:
+            res = GPTFactCheckModel.model_validate_json(
+                resp.choices[0].message.content or "{}"
+            )
+            return res, confidence_score
+        except Exception as e:
+            st.error(f"Error parsing model response: {str(e)}")
+            # Return a default model with an error explanation
+            return GPTFactCheckModel(
+                label=FactCheckLabel.MISLEADING,
+                explanation=f"Error processing response: {str(e)}. The model response could not be parsed.",
+                sources=[],
+            ), 0.0
+
+    except Exception as e:
+        st.error(f"Fact checking error: {str(e)}")
+        return GPTFactCheckModel(
+            label=FactCheckLabel.MISLEADING,
+            explanation=f"Error during fact checking: {str(e)}",
+            sources=[],
+        ), 0.0
 
 
 async def fact_check_process(
@@ -242,12 +271,25 @@ async def search_tool(
     cx = st.secrets.get("GOOGLE_CSE_ID", "")
     base_url = "https://www.googleapis.com/customsearch/v1"
     url = f"{base_url}?key={api_key}&cx={cx}&q={query}&num={num_results}"
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
-    json = ujson.loads(resp.text)
-    assert hasattr(resp, "items")
-    res = [get_url_content(item, model) for item in json["items"]]
-    return res
+
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        json_data = ujson.loads(resp.text)
+
+        # Check if 'items' exists in the parsed JSON
+        if "items" not in json_data:
+            st.warning("No search results found")
+            return []
+
+        res = [get_url_content(item, model) for item in json_data["items"]]
+        return res
+    except requests.exceptions.RequestException as e:
+        st.error(f"Search request error: {str(e)}")
+        return []
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return []
 
 
 async def main_async():
@@ -269,8 +311,12 @@ async def main_async():
         type="password",
         help="You can get your API key from https://console.openai.com/keys",
     )
-    if not oai_api_key:
-        st.warning("Please enter your OpenAI API key to continue")
+
+    # Check for required Google API keys
+    if not all(key in st.secrets for key in ["GOOGLE_API_KEY", "GOOGLE_CSE_ID"]):
+        st.error(
+            "Missing required Google API keys in secrets. Please check your configuration.",
+        )
         st.stop()
 
     # Initialize OpenAI client
@@ -280,12 +326,8 @@ async def main_async():
         except Exception as e:
             st.error(f"Failed to initialize OpenAI client: {e!s}")
             st.stop()
-
-    # Check for required Google API keys
-    if not all(key in st.secrets for key in ["GOOGLE_API_KEY", "GOOGLE_CSE_ID"]):
-        st.error(
-            "Missing required Google API keys in secrets. Please check your configuration.",
-        )
+    else:
+        st.warning("Please enter your OpenAI API key to continue")
         st.stop()
 
     # User input
@@ -295,9 +337,7 @@ async def main_async():
         height=150,
     )
 
-    if oai_client is None:
-        st.stop()
-
+    # Get models and select a sensible default (gpt-4 if available)
     models = sorted(model.id for model in oai_client.models.list().data)
     model = st.selectbox("Choose a Model", models, index=0)
 
@@ -306,50 +346,49 @@ async def main_async():
             st.warning("Please enter some text to verify.")
             st.stop()
 
-        if not oai_client:
-            st.error("OpenAI client not initialized. Please provide a valid API key.")
-            st.stop()
-
         # Process the claim
         with st.spinner("Analyzing and verifying claim..."):
-            result = await fact_check_process(claim, model)
+            try:
+                result = await fact_check_process(claim, model)
 
-            # Create columns for results
-            col1, col2 = st.columns(2)
+                # Create columns for results
+                col1, col2 = st.columns(2)
 
-            # Display results
-            st.subheader("Verification Result")
+                # Display results
+                st.subheader("Verification Result")
 
-            # Label display with color coding
-            color_map = {
-                FactCheckLabel.CORRECT: "green",
-                FactCheckLabel.INCORRECT: "red",
-                FactCheckLabel.MISLEADING: "orange",
-            }
-            with col1:
-                st.markdown(
-                    f"**Status:** :{color_map[result.label]}[{result.label.upper()}]",
-                )
+                # Label display with color coding
+                color_map = {
+                    FactCheckLabel.CORRECT: "green",
+                    FactCheckLabel.INCORRECT: "red",
+                    FactCheckLabel.MISLEADING: "orange",
+                }
+                with col1:
+                    st.markdown(
+                        f"**Status:** :{color_map[result.label]}[{result.label.upper()}]",
+                    )
 
-            # Confidence score display
-            confidence_percentage = int(result.confidence_score * 100)
-            with col2:
-                st.metric(
-                    label="Confidence",
-                    value=confidence_percentage,
-                )
+                # Confidence score display
+                confidence_percentage = int(result.confidence_score * 100)
+                with col2:
+                    st.metric(
+                        label="Confidence",
+                        value=f"{confidence_percentage}%",
+                    )
 
-            # Explanation
-            st.markdown("### Explanation")
-            st.write(result.response)
+                # Explanation
+                st.markdown("### Explanation")
+                st.write(result.response)
 
-            # References
-            st.markdown("### References")
-            if result.references:
-                for i, source in enumerate(result.references, 1):
-                    st.markdown(f"{i}. [{source}]({source})")
-            else:
-                st.warning("No references found for this verification")
+                # References
+                st.markdown("### References")
+                if result.references:
+                    for i, source in enumerate(result.references, 1):
+                        st.markdown(f"{i}. [{source}]({source})")
+                else:
+                    st.warning("No references found for this verification")
+            except Exception as e:
+                st.error(f"An error occurred during verification: {str(e)}")
 
 
 def main():
