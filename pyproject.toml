@@ -6,8 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "deep-translator>=1.11.4",
-    "groq>=0.22.0",
-    "instructor>=1.7.9",
+    "openai>=1.70.0",
     "streamlit>=1.44.1",
     "ujson>=5.10.0",
 ]
