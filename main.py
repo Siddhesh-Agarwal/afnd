@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import math
 from enum import Enum
@@ -62,54 +61,19 @@ class FactCheckResponse(BaseModel):
     )
 
 
-def summarize(text: str, model: str) -> str:
-    """summarizes the text via OpenAI."""
-    if len(text) <= 200:
-        return text
-    try:
-        global oai_client
-
-        if not oai_client:
-            st.error("OpenAI client not initialized. Please provide an API key.")
-            st.stop()
-
-        response = oai_client.beta.chat.completions.parse(
-            model=model,
-            response_format=GPTGeneratedSummary,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Generate a concise summary in the language of the article. ",
-                },
-                {
-                    "role": "user",
-                    "content": f"Summarize the following text in a concise way:\n{text}",
-                },
-            ],
-            max_tokens=1000,
-        )
-        assert isinstance(response, GPTGeneratedSummary)
-        return response.summary or ""
-    except AssertionError:
-        return ""
-    except Exception as e:
-        st.error(f"Summarization error: {str(e)}")
-        return text
-
-
-def get_content(url: str, model: str) -> str | None:
+def get_content(url: str) -> str | None:
     """returns the content of given url"""
     try:
         with requests.get(url, timeout=15) as res:
             res.raise_for_status()
             soup = BeautifulSoup(res.text, "html.parser")
-            return summarize(soup.get_text(), model)
+            return soup.get_text()
     except requests.exceptions.RequestException:
         return None
 
 
-def get_url_content(item: dict, model: str) -> SearchResult:
-    content = get_content(str(item.get("link", "")), model)
+def get_url_content(item: dict) -> SearchResult:
+    content = get_content(str(item.get("link", "")))
     return {
         "title": item["title"],
         "link": item["link"],
@@ -139,7 +103,7 @@ def calculate_confidence_from_logprobs(logprobs: ChoiceLogprobs) -> float:
         return 0.0
 
 
-async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
+def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
     """fact_check checks the data against the OpenAI API with logprobs to calculate confidence.
 
     Parameters
@@ -161,9 +125,8 @@ async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
         st.error("OpenAI client not initialized. Please provide an API key.")
         st.stop()
 
-    response = oai_client.beta.chat.completions.parse(
+    response = oai_client.chat.completions.create(
         model=model,
-        response_format=SearchQuery,
         messages=[
             {
                 "role": "system",
@@ -174,10 +137,43 @@ async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
                 "content": claim,
             },
         ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search for information",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ],
+        tool_choice="auto",
     )
     assert isinstance(response, SearchQuery)
 
-    search_results = await search_tool(response.query, model)
+    if response.choices[0].message.tool_calls:
+        for tool_call in response.choices[0].message.tool_calls:
+            if tool_call.function.name == "search":
+                args = ujson.loads(tool_call.function.arguments)
+                query = args["query"]
+                st.write(f"Searching for: `{query}`")
+                search_results = search_tool(query)
+                break
+        else:
+            st.error("AI Agent failed")
+            st.stop()
+    else:
+        st.error("AI Agent failed")
+        st.stop()
 
     # Send the search results back to GPT for analysis
     # Request logprobs to calculate confidence
@@ -230,7 +226,7 @@ async def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
         ), 0.0
 
 
-async def fact_check_process(
+def fact_check_process(
     text_data: str,
     model: str,
 ) -> FactCheckResponse:
@@ -249,7 +245,7 @@ async def fact_check_process(
         The result of the fact check with confidence score based on logprobs.
 
     """
-    fact_check_resp, confidence_score = await fact_check(text_data, model)
+    fact_check_resp, confidence_score = fact_check(text_data, model)
 
     # assign to right variable
     fact_check_obj = FactCheckResponse(
@@ -263,9 +259,7 @@ async def fact_check_process(
     return fact_check_obj
 
 
-async def search_tool(
-    query: str, model: str, num_results: int = 3
-) -> list[SearchResult]:
+def search_tool(query: str, num_results: int = 3) -> list[SearchResult]:
     """Tool to search via Google CSE"""
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     cx = st.secrets.get("GOOGLE_CSE_ID", "")
@@ -282,7 +276,7 @@ async def search_tool(
             st.warning("No search results found")
             return []
 
-        res = [get_url_content(item, model) for item in json_data["items"]]
+        res = [get_url_content(item) for item in json_data["items"]]
         return res
     except requests.exceptions.RequestException as e:
         st.error(f"Search request error: {str(e)}")
@@ -292,7 +286,7 @@ async def search_tool(
         return []
 
 
-async def main_async():
+def main():
     global oai_client
 
     st.set_page_config(
@@ -349,7 +343,7 @@ async def main_async():
         # Process the claim
         with st.spinner("Analyzing and verifying claim..."):
             try:
-                result = await fact_check_process(claim, model)
+                result = fact_check_process(claim, model)
 
                 # Create columns for results
                 col1, col2 = st.columns(2)
@@ -389,10 +383,6 @@ async def main_async():
                     st.warning("No references found for this verification")
             except Exception as e:
                 st.error(f"An error occurred during verification: {str(e)}")
-
-
-def main():
-    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
