@@ -13,6 +13,12 @@ from pydantic import BaseModel, Field
 # Initialize OpenAI client
 oai_client = None
 
+provider_to_base_url = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openai": "https://api.openai.com/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+}
+
 
 class GPTGeneratedSummary(BaseModel):
     summary: str = Field(description="The summary of the article")
@@ -241,24 +247,24 @@ def main():
     global oai_client
 
     st.set_page_config(
-        page_title="FactCheck AI",
+        page_title="Newsful",
         page_icon="🔍",
         layout="centered",
         initial_sidebar_state="collapsed",
     )
 
-    st.title("🔍 FactCheck AI")
-    st.markdown("## Verify claims using AI-powered fact checking")
+    st.title("🔍 Newsful")
+    st.subheader("Agentic Fact Checking")
 
+    oai_provider = st.selectbox(
+        "Select your provider",
+        options=provider_to_base_url.keys(),
+        index=0,
+    )
     # API Key Input
     oai_api_key = st.text_input(
-        "Enter your OpenAI API Key:",
+        "Enter your API Key:",
         type="password",
-    )
-
-    oai_base_url = st.text_input(
-        "Enter your OpenAI Base URL:",
-        value="https://api.openai.com/v1",
     )
 
     # Check for required Google API keys
@@ -272,10 +278,11 @@ def main():
     if not oai_api_key:
         st.warning("Please enter your API key to continue")
         st.stop()
-    elif not oai_base_url:
+    elif not oai_provider:
         st.warning("Please enter your base URL to continue")
         st.stop()
     try:
+        oai_base_url = provider_to_base_url[oai_provider]
         oai_client = OpenAI(base_url=oai_base_url, api_key=oai_api_key)
     except Exception as e:
         st.error(f"Failed to initialize OpenAI client: {e!s}")
