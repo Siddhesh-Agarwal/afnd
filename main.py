@@ -1,22 +1,21 @@
 import datetime
 import math
 from enum import Enum
-from typing import TypedDict
+from typing import List, Optional, TypedDict
 
-from bs4 import BeautifulSoup
 import requests
 import streamlit as st
-import ujson
+import json
 from openai import OpenAI
 from openai.types.chat.chat_completion import ChoiceLogprobs
-from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic import BaseModel, Field
 
 # Initialize OpenAI client
 oai_client = None
 
 
 class GPTGeneratedSummary(BaseModel):
-    summary: str | None = Field(None, description="The summary of the article")
+    summary: str = Field(description="The summary of the article")
 
 
 class SearchQuery(BaseModel):
@@ -41,11 +40,8 @@ class GPTFactCheckModel(BaseModel):
     """expected result format from OpenAI for fact checking"""
 
     label: FactCheckLabel = Field(description="The result of the fact check")
-    explanation: str = Field("", description="The explanation of the fact check")
-    sources: list[AnyHttpUrl] = Field(
-        list(),
-        description="The sources of the fact check",
-    )
+    explanation: str = Field(description="The explanation of the fact check")
+    sources: List[str] = Field(description="The sources of the fact check")
 
 
 class FactCheckResponse(BaseModel):
@@ -54,30 +50,15 @@ class FactCheckResponse(BaseModel):
     label: FactCheckLabel = Field(description="The label of the fact check")
     summary: str = Field(description="The summary of the claim")
     response: str = Field(description="The logical explanation of the fact check")
-    references: list[AnyHttpUrl] = Field(description="The references of the fact check")
-    confidence_score: float = Field(
-        0.0,
-        description="Confidence score from 0.0 to 1.0 based on logprobs",
-    )
-
-
-def get_content(url: str) -> str | None:
-    """returns the content of given url"""
-    try:
-        with requests.get(url, timeout=15) as res:
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
-            return soup.get_text()
-    except requests.exceptions.RequestException:
-        return None
+    references: List[str] = Field(description="The references of the fact check")
+    confidence_score: Optional[float]
 
 
 def get_url_content(item: dict) -> SearchResult:
-    content = get_content(str(item.get("link", "")))
     return {
         "title": item["title"],
         "link": item["link"],
-        "content": content or item["snippet"],
+        "content": item["snippet"],
     }
 
 
@@ -103,7 +84,7 @@ def calculate_confidence_from_logprobs(logprobs: ChoiceLogprobs) -> float:
         return 0.0
 
 
-def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
+def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, Optional[float]]:
     """fact_check checks the data against the OpenAI API with logprobs to calculate confidence.
 
     Parameters
@@ -158,12 +139,11 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
         ],
         tool_choice="auto",
     )
-    assert isinstance(response, SearchQuery)
 
     if response.choices[0].message.tool_calls:
         for tool_call in response.choices[0].message.tool_calls:
             if tool_call.function.name == "search":
-                args = ujson.loads(tool_call.function.arguments)
+                args = json.loads(tool_call.function.arguments)
                 query = args["query"]
                 st.write(f"Searching for: `{query}`")
                 search_results = search_tool(query)
@@ -176,54 +156,24 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, float]:
         st.stop()
 
     # Send the search results back to GPT for analysis
-    # Request logprobs to calculate confidence
-    try:
-        resp = oai_client.beta.chat.completions.parse(
-            model=model,
-            response_format=GPTFactCheckModel,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional fact checker. You will be given a statement along with relevant search results and you are supposed to provide a fact check based on the search results. You need to classify the claim as 'correct', 'incorrect', or 'misleading' and provide the logical explanation along with the sources you used.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Claim: {claim}\n\nSearch results: {ujson.dumps(search_results, escape_forward_slashes=False, indent=2)}",
-                },
-            ],
-            logprobs=True,
-        )
+    resp = oai_client.beta.chat.completions.parse(
+        model=model,
+        response_format=GPTFactCheckModel,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a professional fact checker. You will be given a statement along with relevant search results and you are supposed to provide a fact check based on the search results. You need to classify the claim as 'correct', 'incorrect', or 'misleading' and provide the logical explanation along with the sources you used.",
+            },
+            {
+                "role": "user",
+                "content": f"Claim: {claim}\n\nSearch results: {json.dumps(search_results)}",
+            },
+        ],
+    )
 
-        logprobs = resp.choices[0].logprobs
-
-        if logprobs is None:
-            raise Exception("Logprobs error")
-
-        # Calculate confidence score
-        confidence_score = calculate_confidence_from_logprobs(logprobs)
-
-        # Try to parse the response as JSON, with error handling
-        try:
-            res = GPTFactCheckModel.model_validate_json(
-                resp.choices[0].message.content or "{}"
-            )
-            return res, confidence_score
-        except Exception as e:
-            st.error(f"Error parsing model response: {str(e)}")
-            # Return a default model with an error explanation
-            return GPTFactCheckModel(
-                label=FactCheckLabel.MISLEADING,
-                explanation=f"Error processing response: {str(e)}. The model response could not be parsed.",
-                sources=[],
-            ), 0.0
-
-    except Exception as e:
-        st.error(f"Fact checking error: {str(e)}")
-        return GPTFactCheckModel(
-            label=FactCheckLabel.MISLEADING,
-            explanation=f"Error during fact checking: {str(e)}",
-            sources=[],
-        ), 0.0
+    # Try to parse the response as JSON, with error handling
+    res = GPTFactCheckModel.model_validate_json(resp.choices[0].message.content or "{}")
+    return res, None
 
 
 def fact_check_process(
@@ -269,14 +219,15 @@ def search_tool(query: str, num_results: int = 3) -> list[SearchResult]:
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        json_data = ujson.loads(resp.text)
+        json_data = resp.json()
 
         # Check if 'items' exists in the parsed JSON
         if "items" not in json_data:
             st.warning("No search results found")
             return []
 
-        res = [get_url_content(item) for item in json_data["items"]]
+        # res = [get_url_content(item) for item in json_data["items"]]
+        res = list(map(get_url_content, json_data["items"]))
         return res
     except requests.exceptions.RequestException as e:
         st.error(f"Search request error: {str(e)}")
@@ -303,7 +254,11 @@ def main():
     oai_api_key = st.text_input(
         "Enter your OpenAI API Key:",
         type="password",
-        help="You can get your API key from https://console.openai.com/keys",
+    )
+
+    oai_base_url = st.text_input(
+        "Enter your OpenAI Base URL:",
+        value="https://api.openai.com/v1",
     )
 
     # Check for required Google API keys
@@ -314,15 +269,21 @@ def main():
         st.stop()
 
     # Initialize OpenAI client
-    if oai_api_key:
-        try:
-            oai_client = OpenAI(api_key=oai_api_key)
-        except Exception as e:
-            st.error(f"Failed to initialize OpenAI client: {e!s}")
-            st.stop()
-    else:
-        st.warning("Please enter your OpenAI API key to continue")
+    if not oai_api_key:
+        st.warning("Please enter your API key to continue")
         st.stop()
+    elif not oai_base_url:
+        st.warning("Please enter your base URL to continue")
+        st.stop()
+    try:
+        oai_client = OpenAI(base_url=oai_base_url, api_key=oai_api_key)
+    except Exception as e:
+        st.error(f"Failed to initialize OpenAI client: {e!s}")
+        st.stop()
+
+    # Get models and select a sensible default (gpt-4 if available)
+    models = sorted(model.id for model in oai_client.models.list().data)
+    model = st.selectbox("Choose a Model", models, index=0)
 
     # User input
     claim = st.text_area(
@@ -331,10 +292,6 @@ def main():
         height=150,
     )
 
-    # Get models and select a sensible default (gpt-4 if available)
-    models = sorted(model.id for model in oai_client.models.list().data)
-    model = st.selectbox("Choose a Model", models, index=0)
-
     if st.button("Verify Claim", type="primary"):
         if not claim.strip():
             st.warning("Please enter some text to verify.")
@@ -342,47 +299,47 @@ def main():
 
         # Process the claim
         with st.spinner("Analyzing and verifying claim..."):
-            try:
-                result = fact_check_process(claim, model)
+            result = fact_check_process(claim, model)
 
-                # Create columns for results
-                col1, col2 = st.columns(2)
+            # Create columns for results
+            col1, col2 = st.columns(2)
 
-                # Display results
-                st.subheader("Verification Result")
+            # Display results
+            st.subheader("Verification Result")
 
-                # Label display with color coding
-                color_map = {
-                    FactCheckLabel.CORRECT: "green",
-                    FactCheckLabel.INCORRECT: "red",
-                    FactCheckLabel.MISLEADING: "orange",
-                }
-                with col1:
-                    st.markdown(
-                        f"**Status:** :{color_map[result.label]}[{result.label.upper()}]",
-                    )
+            # Label display with color coding
+            color_map = {
+                FactCheckLabel.CORRECT: "green",
+                FactCheckLabel.INCORRECT: "red",
+                FactCheckLabel.MISLEADING: "orange",
+            }
+            with col1:
+                st.markdown(
+                    f"**Status:** :{color_map[result.label]}[{result.label.upper()}]",
+                )
 
-                # Confidence score display
-                confidence_percentage = int(result.confidence_score * 100)
-                with col2:
+            # Confidence score display
+            with col2:
+                if result.confidence_score is None:
+                    st.warning("Confidence score not available")
+                else:
+                    confidence_percentage = int(result.confidence_score * 100)
                     st.metric(
                         label="Confidence",
                         value=f"{confidence_percentage}%",
                     )
 
-                # Explanation
-                st.markdown("### Explanation")
-                st.write(result.response)
+            # Explanation
+            st.markdown("### Explanation")
+            st.write(result.response)
 
-                # References
-                st.markdown("### References")
-                if result.references:
-                    for i, source in enumerate(result.references, 1):
-                        st.markdown(f"{i}. [{source}]({source})")
-                else:
-                    st.warning("No references found for this verification")
-            except Exception as e:
-                st.error(f"An error occurred during verification: {str(e)}")
+            # References
+            st.markdown("### References")
+            if result.references:
+                for i, source in enumerate(result.references, 1):
+                    st.markdown(f"{i}. [{source}]({source})")
+            else:
+                st.warning("No references found for this verification")
 
 
 if __name__ == "__main__":

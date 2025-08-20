@@ -8,5 +8,4 @@ dependencies = [
     "deep-translator>=1.11.4",
     "openai>=1.70.0",
     "streamlit>=1.44.1",
-    "ujson>=5.10.0",
 ]
