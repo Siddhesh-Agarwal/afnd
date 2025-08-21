@@ -312,7 +312,13 @@ def main():
         st.warning("Please enter your base URL to continue")
         st.stop()
     try:
-        oai_base_url = provider_info[oai_provider]["base_url"]
+        if oai_provider == "Custom":
+            oai_base_url = st.text_input(
+                "Enter OpenAI compatible Base URL for Provider",
+                placeholder="https://api.openai.com/v1",
+            )
+        else:
+            oai_base_url = provider_info[oai_provider]["base_url"]
         oai_client = OpenAI(base_url=oai_base_url, api_key=oai_api_key)
     except Exception as e:
         st.error(f"Failed to initialize OpenAI client: {e!s}")
