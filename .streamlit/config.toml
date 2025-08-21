@@ -1,0 +1,11 @@
+[theme]
+base="dark"
+primaryColor="#00d4aa"
+secondaryBackgroundColor="#1a1d29"
+
+
+[browser]
+gatherUsageStats = false
+
+[server]
+showErrorDetails = false
