@@ -26,7 +26,7 @@ provider_info: Dict[str, ProviderDetails] = {
             "openai/gpt-oss-20b",
             "openai/gpt-oss-120b",
             "moonshotai/kimi-k2-instruct",
-            "meta-llama/llama-4-maverick-17b-128e-instruct"
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
             "meta-llama/llama-4-scout-17b-16e-instruct",
         ],
     },
@@ -50,7 +50,10 @@ provider_info: Dict[str, ProviderDetails] = {
     },
     "Deepseek AI": {
         "base_url": "https://api.deepseek.com/v1",
-        "models": ["deepseek-chat"],
+        "models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
     },
 }
 
@@ -352,14 +355,12 @@ def main():
             }
             with col1:
                 st.markdown(
-                    f"**Status:** :{color_map[result.label]}[{result.label.upper()}]",
+                    f"Status: :{color_map[result.label]}[**{result.label.upper()}**]",
                 )
 
             # Confidence score display
             with col2:
-                if result.confidence_score is None:
-                    st.warning("Confidence score not available")
-                else:
+                if result.confidence_score:
                     confidence_percentage = int(result.confidence_score * 100)
                     st.metric(
                         label="Confidence",
