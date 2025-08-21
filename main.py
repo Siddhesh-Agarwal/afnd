@@ -1,7 +1,7 @@
 import datetime
 import math
 from enum import Enum
-from typing import List, Optional, TypedDict
+from typing import Dict, List, Optional, TypedDict
 
 import requests
 import streamlit as st
@@ -13,19 +13,46 @@ from pydantic import BaseModel, Field
 # Initialize OpenAI client
 oai_client = None
 
-provider_to_base_url = {
-    "groq": "https://api.groq.com/openai/v1",
-    "openai": "https://api.openai.com/v1",
-    "deepseek": "https://api.deepseek.com/v1",
+
+class ProviderDetails(TypedDict):
+    base_url: str
+    models: List[str]
+
+
+provider_info: Dict[str, ProviderDetails] = {
+    "Groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": [
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "moonshotai/kimi-k2-instruct",
+            "meta-llama/llama-4-maverick-17b-128e-instruct"
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+        ],
+    },
+    "OpenAI": {
+        "base_url": "https://api.openai.com/v1",
+        "models": [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o1",
+            "o1-pro",
+            "o3-pro",
+            "o3-mini",
+            "o4-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "gpt-4o",
+            "gpt-4o-mini",
+        ],
+    },
+    "Deepseek AI": {
+        "base_url": "https://api.deepseek.com/v1",
+        "models": ["deepseek-chat"],
+    },
 }
-
-
-class GPTGeneratedSummary(BaseModel):
-    summary: str = Field(description="The summary of the article")
-
-
-class SearchQuery(BaseModel):
-    query: str
 
 
 class SearchResult(TypedDict):
@@ -43,7 +70,7 @@ class FactCheckLabel(str, Enum):
 
 
 class GPTFactCheckModel(BaseModel):
-    """expected result format from OpenAI for fact checking"""
+    """Expected result format for fact checking"""
 
     label: FactCheckLabel = Field(description="The result of the fact check")
     explanation: str = Field(description="The explanation of the fact check")
@@ -258,12 +285,12 @@ def main():
 
     oai_provider = st.selectbox(
         "Select your provider",
-        options=provider_to_base_url.keys(),
+        options=list(provider_info.keys()) + ["Custom"],
         index=0,
     )
     # API Key Input
     oai_api_key = st.text_input(
-        "Enter your API Key:",
+        f"Enter your {oai_provider} API Key:",
         type="password",
     )
 
@@ -282,14 +309,17 @@ def main():
         st.warning("Please enter your base URL to continue")
         st.stop()
     try:
-        oai_base_url = provider_to_base_url[oai_provider]
+        oai_base_url = provider_info[oai_provider]["base_url"]
         oai_client = OpenAI(base_url=oai_base_url, api_key=oai_api_key)
     except Exception as e:
         st.error(f"Failed to initialize OpenAI client: {e!s}")
         st.stop()
 
     # Get models and select a sensible default (gpt-4 if available)
-    models = sorted(model.id for model in oai_client.models.list().data)
+    if oai_provider == "Custom":
+        models = sorted(model.id for model in oai_client.models.list().data)
+    else:
+        models = provider_info[oai_provider]["models"]
     model = st.selectbox("Choose a Model", models, index=0)
 
     # User input
