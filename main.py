@@ -159,6 +159,7 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, Optional[floa
                 "type": "function",
                 "function": {
                     "name": "search",
+                    "strict": True,
                     "description": "Search for information",
                     "parameters": {
                         "type": "object",
@@ -169,6 +170,7 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, Optional[floa
                             }
                         },
                         "required": ["query"],
+                        "additionalProperties": False,
                     },
                 },
             }
@@ -291,6 +293,14 @@ def main():
         options=list(provider_info.keys()) + ["Custom"],
         index=0,
     )
+    if oai_provider == "Custom":
+        oai_base_url = st.text_input(
+            "Enter OpenAI compatible Base URL for Provider",
+            placeholder="https://api.openai.com/v1",
+        )
+    else:
+        oai_base_url = provider_info[oai_provider]["base_url"]
+
     # API Key Input
     oai_api_key = st.text_input(
         f"Enter your {oai_provider} API Key:",
@@ -312,13 +322,6 @@ def main():
         st.warning("Please enter your base URL to continue")
         st.stop()
     try:
-        if oai_provider == "Custom":
-            oai_base_url = st.text_input(
-                "Enter OpenAI compatible Base URL for Provider",
-                placeholder="https://api.openai.com/v1",
-            )
-        else:
-            oai_base_url = provider_info[oai_provider]["base_url"]
         oai_client = OpenAI(base_url=oai_base_url, api_key=oai_api_key)
     except Exception as e:
         st.error(f"Failed to initialize OpenAI client: {e!s}")
@@ -329,7 +332,7 @@ def main():
         models = sorted(model.id for model in oai_client.models.list().data)
     else:
         models = provider_info[oai_provider]["models"]
-    model = st.selectbox("Choose a Model", models, index=0)
+    model = st.selectbox("Choose a Model", sorted(models), index=0)
 
     # User input
     claim = st.text_area(
