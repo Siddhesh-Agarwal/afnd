@@ -176,6 +176,7 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, Optional[floa
             }
         ],
         tool_choice="auto",
+        temperature=0,
     )
 
     if response.choices[0].message.tool_calls:
@@ -207,6 +208,7 @@ def fact_check(claim: str, model: str) -> tuple[GPTFactCheckModel, Optional[floa
                 "content": f"Claim: {claim}\n\nSearch results: {json.dumps(search_results)}",
             },
         ],
+        temperature=0,
     )
 
     # Try to parse the response as JSON, with error handling
