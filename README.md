@@ -24,3 +24,7 @@
 ### Link to Loom
 
 <https://loom.com/share/d87f975936d34808b4dbc770dd76bffa>
+
+## List of sources
+
+[source](https://gist.githubusercontent.com/Siddhesh-Agarwal/22dcb7ea125aa8d9028f7cd714c60beb/raw/4a07ee5e461875cf0688c60e08075e49a6ee7b35/annotation.csv)
